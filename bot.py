@@ -208,6 +208,7 @@ async def leaderboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("starttest", start_test))
 app.add_handler(CommandHandler("uploadcsv", uploadcsv))
 app.add_handler(CommandHandler("result", result))
 app.add_handler(CommandHandler("leaderboard", leaderboard_cmd))
@@ -220,3 +221,4 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler))
 app.add_handler(PollAnswerHandler(receive_poll_answer))
 
 app.run_polling()
+
