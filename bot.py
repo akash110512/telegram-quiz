@@ -1,12 +1,11 @@
 import os
 import pandas as pd
 from io import StringIO
-
 from telegram import (
     Update,
-    ReplyKeyboardMarkup
+    ReplyKeyboardMarkup,
+    KeyboardButton
 )
-
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -18,22 +17,20 @@ from telegram.ext import (
 
 TOKEN = os.getenv("BOT_TOKEN")
 
-ADMIN_ID = 8225509195
-
 questions = []
 poll_map = {}
-
-scores = {}
-wrong_questions = {}
+user_scores = {}
 leaderboard = {}
 
+ADMIN_ID = 8225509195
 
+
+# MENU
 menu = ReplyKeyboardMarkup(
     [
-        ["📘 Start Test"],
-        ["❌ Wrong Questions"],
-        ["🏆 Leaderboard", "📊 Result"],
-        ["📂 Upload CSV", "❓ Help"]
+        [KeyboardButton("📚 Start Test")],
+        [KeyboardButton("📂 Upload CSV")],
+        [KeyboardButton("📊 Result"), KeyboardButton("🏆 Leaderboard")],
     ],
     resize_keyboard=True
 )
@@ -42,43 +39,29 @@ menu = ReplyKeyboardMarkup(
 # START
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 MCQ Exam Bot\n\nUse the menu below.",
+        "🤖 MCQ Exam Bot\n\nUpload CSV or paste CSV text.",
         reply_markup=menu
-    )
-
-
-# HELP
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        """
-📘 Start Test → Begin quiz
-❌ Wrong Questions → Retry wrong
-🏆 Leaderboard → Top scores
-📊 Result → Show your result
-📂 Upload CSV → Admin only
-"""
     )
 
 
 # LOAD CSV FILE
 async def load_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if update.effective_user.id != ADMIN_ID:
-        return
+    global questions
 
     file = await update.message.document.get_file()
     await file.download_to_drive("questions.csv")
 
-    load_questions("questions.csv")
+    df = pd.read_csv("questions.csv")
+    df["Answer"] = df["Answer"].astype(str).str.strip().str.upper()
+
+    questions = df.to_dict("records")
 
     await update.message.reply_text(f"✅ {len(questions)} questions loaded.")
 
 
 # LOAD CSV TEXT
 async def load_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if update.effective_user.id != ADMIN_ID:
-        return
+    global questions
 
     text = update.message.text
 
@@ -86,37 +69,29 @@ async def load_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     df = pd.read_csv(StringIO(text))
-
     df["Answer"] = df["Answer"].astype(str).str.strip().str.upper()
 
-    global questions
     questions = df.to_dict("records")
 
     await update.message.reply_text(f"✅ {len(questions)} questions loaded.")
 
 
-def load_questions(file):
-
-    df = pd.read_csv(file)
-
-    df["Answer"] = df["Answer"].astype(str).str.strip().str.upper()
-
-    global questions
-    questions = df.to_dict("records")
-
-
 # START TEST
 async def start_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
+    user = update.effective_user.id
+
     if not questions:
-        await update.message.reply_text("Upload questions first.")
+        await update.message.reply_text("Upload CSV first.")
         return
 
-    user = update.effective_user.id
-    name = update.effective_user.first_name
+    user_scores[user] = {
+        "score": 0,
+        "answered": 0,
+        "total": len(questions)
+    }
 
-    scores[user] = 0
-    wrong_questions[user] = []
+    poll_map.clear()
 
     for i, q in enumerate(questions):
 
@@ -127,109 +102,75 @@ async def start_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
             q["Option D"]
         ]
 
-        correct = q["Answer"]
-        correct_index = ["A", "B", "C", "D"].index(correct)
+        correct_index = ["A","B","C","D"].index(q["Answer"])
 
-        poll = await context.bot.send_poll(
+        msg = await context.bot.send_poll(
             chat_id=update.effective_chat.id,
-            question=f"Question {i+1}/{len(questions)}\n{q['Question']}",
+            question=f"Q{i+1}/{len(questions)}\n{q['Question']}",
             options=options,
             type="quiz",
             correct_option_id=correct_index,
             is_anonymous=False
         )
 
-        poll_map[poll.poll.id] = {
-            "user": user,
-            "correct": correct_index,
-            "question": q,
-            "name": name
-        }
+        poll_map[msg.poll.id] = correct_index
 
 
-# RECEIVE ANSWERS
-async def receive_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# POLL ANSWER
+async def receive_poll(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     answer = update.poll_answer
 
+    user = answer.user.id
     poll_id = answer.poll_id
-    option = answer.option_ids[0]
+    choice = answer.option_ids[0]
 
-    data = poll_map.get(poll_id)
+    correct = poll_map.get(poll_id)
 
-    if not data:
+    if user not in user_scores:
         return
 
-    user = data["user"]
+    user_scores[user]["answered"] += 1
 
-    if option == data["correct"]:
-        scores[user] += 1
-    else:
-        wrong_questions[user].append(data["question"])
+    if choice == correct:
+        user_scores[user]["score"] += 1
+
+    data = user_scores[user]
+
+    if data["answered"] == data["total"]:
+
+        score = data["score"]
+        total = data["total"]
+
+        leaderboard[user] = score
+
+        await context.bot.send_message(
+            chat_id=user,
+            text=(
+                "📊 TEST FINISHED\n\n"
+                f"Total Questions: {total}\n"
+                f"Correct: {score}\n"
+                f"Wrong: {total-score}\n\n"
+                f"Score: {score}"
+            )
+        )
 
 
 # RESULT
 async def result(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user = update.effective_user.id
-    name = update.effective_user.first_name
 
-    total = len(questions)
-    correct = scores.get(user, 0)
-    wrong = total - correct
-
-    leaderboard[name] = correct
-
-    text = f"""
-📊 Test Finished
-
-Total Questions: {total}
-Correct: {correct}
-Wrong: {wrong}
-
-Score: {correct}
-"""
-
-    await update.message.reply_text(text)
-
-
-# WRONG PRACTICE
-async def wrong(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    user = update.effective_user.id
-
-    if user not in wrong_questions or not wrong_questions[user]:
-        await update.message.reply_text("No wrong questions.")
+    if user not in user_scores:
+        await update.message.reply_text("No test taken.")
         return
 
-    qs = wrong_questions[user]
+    data = user_scores[user]
 
-    for i, q in enumerate(qs):
-
-        options = [
-            q["Option A"],
-            q["Option B"],
-            q["Option C"],
-            q["Option D"]
-        ]
-
-        correct = q["Answer"]
-        correct_index = ["A", "B", "C", "D"].index(correct)
-
-        poll = await context.bot.send_poll(
-            chat_id=update.effective_chat.id,
-            question=f"Retry {i+1}/{len(qs)}\n{q['Question']}",
-            options=options,
-            type="quiz",
-            correct_option_id=correct_index,
-            is_anonymous=False
-        )
-
-        poll_map[poll.poll.id] = {
-            "user": user,
-            "correct": correct_index,
-            "question": q
-        }
+    await update.message.reply_text(
+        f"📊 Result\n\n"
+        f"Score: {data['score']} / {data['total']}"
+    )
 
 
 # LEADERBOARD
@@ -239,52 +180,46 @@ async def leaderboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No scores yet.")
         return
 
-    sorted_scores = sorted(leaderboard.items(), key=lambda x: x[1], reverse=True)
-
     text = "🏆 Leaderboard\n\n"
 
-    for i, (name, score) in enumerate(sorted_scores[:10], start=1):
-        text += f"{i}. {name} — {score}\n"
+    sorted_scores = sorted(leaderboard.items(), key=lambda x: x[1], reverse=True)
+
+    for i,(user,score) in enumerate(sorted_scores[:10],start=1):
+        text += f"{i}. {score}\n"
 
     await update.message.reply_text(text)
 
 
-# MENU HANDLER
+# MENU BUTTONS
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text
 
-    if text == "📘 Start Test":
+    if text == "📚 Start Test":
         await start_test(update, context)
 
-    elif text == "❌ Wrong Questions":
-        await wrong(update, context)
-
-    elif text == "🏆 Leaderboard":
-        await leaderboard_cmd(update, context)
+    elif text == "📂 Upload CSV":
+        await update.message.reply_text("Send CSV file.")
 
     elif text == "📊 Result":
         await result(update, context)
 
-    elif text == "📂 Upload CSV":
-        await update.message.reply_text("Send CSV file or paste CSV text.")
-
-    elif text == "❓ Help":
-        await help_cmd(update, context)
+    elif text == "🏆 Leaderboard":
+        await leaderboard_cmd(update, context)
 
 
 # MAIN
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("help", help_cmd))
-app.add_handler(CommandHandler("leaderboard", leaderboard_cmd))
+app.add_handler(CommandHandler("starttest", start_test))
 app.add_handler(CommandHandler("result", result))
+app.add_handler(CommandHandler("leaderboard", leaderboard_cmd))
 
 app.add_handler(MessageHandler(filters.Document.ALL, load_file))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, load_text))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler))
+app.add_handler(MessageHandler(filters.TEXT, menu_handler))
 
-app.add_handler(PollAnswerHandler(receive_poll_answer))
+app.add_handler(PollAnswerHandler(receive_poll))
 
 app.run_polling()
