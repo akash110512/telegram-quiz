@@ -1,4 +1,5 @@
 import csv
+import asyncio
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
@@ -105,6 +106,7 @@ async def start_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         count += 1
+        await asyncio.sleep(1)
 
     await update.message.reply_text(f"{count} polls sent.")
 
@@ -120,5 +122,6 @@ app.add_handler(CommandHandler("starttest", start_test))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_csv))
 
 app.run_polling()
+
 
 
