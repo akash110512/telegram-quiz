@@ -1,60 +1,54 @@
 import os
 import pandas as pd
 from io import StringIO
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, PollAnswerHandler
+from telegram import Update
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters
+)
 
 TOKEN = os.getenv("BOT_TOKEN")
 
 ADMIN_ID = 8225509195
 
 questions = []
-poll_map = {}
-user_score = 0
-total_questions = 0
+target_chat = None
 
 
-menu = ReplyKeyboardMarkup(
-    [
-        ["📤 Upload CSV"],
-        ["🧠 Start Test"]
-    ],
-    resize_keyboard=True
-)
-
-
-# START
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Bot ready.\n\nUse command:\n/uploadcsv\n\nPaste CSV text after that."
+    )
+
+
+async def setchannel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    global target_chat
+
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    target_chat = update.effective_chat.id
+
+    await update.message.reply_text(
+        f"Channel/Group set successfully.\nID: {target_chat}"
+    )
+
+
+async def uploadcsv(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if update.effective_user.id != ADMIN_ID:
         return
 
     await update.message.reply_text(
-        "🤖 MCQ Exam Bot\n\nUpload CSV or paste CSV text.",
-        reply_markup=menu
+        "Paste your CSV text now."
     )
 
 
-# LOAD CSV FILE
-async def load_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    global questions
-
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    file = await update.message.document.get_file()
-    await file.download_to_drive("questions.csv")
-
-    df = pd.read_csv("questions.csv")
-
-    questions = df.to_dict("records")
-
-    await update.message.reply_text(f"✅ {len(questions)} questions loaded.")
-
-
-# LOAD CSV TEXT
-async def load_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def receive_csv(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     global questions
 
@@ -63,47 +57,51 @@ async def load_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text
 
-    if "Question" not in text:
+    if "," not in text:
         return
 
-    df = pd.read_csv(StringIO(text))
+    lines = text.strip().split("\n")
+
+    # detect header
+    if not lines[0].lower().startswith("question"):
+        lines.insert(0, "Question,Option A,Option B,Option C,Option D,Answer")
+
+    df = pd.read_csv(StringIO("\n".join(lines)))
 
     questions = df.to_dict("records")
 
-    await update.message.reply_text(f"✅ {len(questions)} questions loaded.")
+    questions = questions[:100]
+
+    await update.message.reply_text(
+        f"CSV uploaded successfully.\nMCQs loaded: {len(questions)}"
+    )
+
+    await send_polls(context)
 
 
-# START TEST
-async def start_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    global user_score, total_questions
-
-    if update.effective_user.id != ADMIN_ID:
-        return
+async def send_polls(context: ContextTypes.DEFAULT_TYPE):
 
     if not questions:
-        await update.message.reply_text("Upload CSV first.")
         return
 
-    user_score = 0
+    if not target_chat:
+        return
 
-    selected = questions[:100]
-
-    total_questions = len(selected)
-
-    for q in selected:
+    for q in questions:
 
         options = [
-            q["Option A"],
-            q["Option B"],
-            q["Option C"],
-            q["Option D"]
+            str(q["Option A"]),
+            str(q["Option B"]),
+            str(q["Option C"]),
+            str(q["Option D"])
         ]
 
-        correct = ["A", "B", "C", "D"].index(q["Answer"])
+        answer = str(q["Answer"]).strip().upper()
 
-        poll = await context.bot.send_poll(
-            chat_id=update.effective_chat.id,
+        correct = ["A", "B", "C", "D"].index(answer)
+
+        await context.bot.send_poll(
+            chat_id=target_chat,
             question=q["Question"],
             options=options,
             type="quiz",
@@ -111,61 +109,13 @@ async def start_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
             is_anonymous=False
         )
 
-        poll_map[poll.poll.id] = correct
 
-    await update.message.reply_text("✅ Test started.")
-
-
-# RECEIVE ANSWERS
-async def receive_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    global user_score
-
-    answer = update.poll_answer
-
-    poll_id = answer.poll_id
-    selected = answer.option_ids[0]
-
-    correct = poll_map.get(poll_id)
-
-    if selected == correct:
-        user_score += 1
-
-
-# RESULT
-async def result(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    await update.message.reply_text(
-        f"📊 Test Finished\n\nScore: {user_score} / {total_questions}"
-    )
-
-
-# MENU HANDLER
-async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    text = update.message.text
-
-    if text == "🧠 Start Test":
-        await start_test(update, context)
-
-    elif text == "📤 Upload CSV":
-        await update.message.reply_text("Send CSV file or paste CSV text.")
-
-
-# MAIN
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("result", result))
-app.add_handler(CommandHandler("starttest", start_test))
+app.add_handler(CommandHandler("uploadcsv", uploadcsv))
+app.add_handler(CommandHandler("setchannel", setchannel))
 
-app.add_handler(MessageHandler(filters.Document.ALL, load_file))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, load_text))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler))
-
-app.add_handler(PollAnswerHandler(receive_poll_answer))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_csv))
 
 app.run_polling()
