@@ -2,7 +2,7 @@ import csv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-TOKEN = "YOUR_BOT_TOKEN"
+TOKEN = "BOT_TOKEN"
 
 questions = []
 target_chat = None
@@ -120,3 +120,4 @@ app.add_handler(CommandHandler("starttest", start_test))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_csv))
 
 app.run_polling()
+
