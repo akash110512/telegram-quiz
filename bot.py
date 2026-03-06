@@ -1,35 +1,70 @@
-import os
-import pandas as pd
-from io import StringIO
+import csv
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-TOKEN = os.getenv("BOT_TOKEN")
-
-ADMIN_ID = 8225509195
+TOKEN = "YOUR_BOT_TOKEN"
 
 questions = []
 target_chat = None
+waiting_csv = False
 
 
+# START
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Bot ready.\n\nUse command:\n/uploadcsv\n\nPaste CSV text after that."
+        "Bot ready.\n\nUse command:\n/uploadcsv\n\nThen paste CSV text."
     )
 
 
-async def setchannel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# UPLOAD CSV
+async def upload_csv(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global waiting_csv
+    waiting_csv = True
+    await update.message.reply_text("Paste CSV text now.")
+
+
+# RECEIVE CSV
+async def receive_csv(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global questions, waiting_csv
+
+    if not waiting_csv:
+        return
+
+    text = update.message.text.strip()
+    lines = text.splitlines()
+
+    reader = csv.reader(lines)
+
+    data = list(reader)
+
+    # Auto header detection
+    if data[0][0].lower() != "question":
+        data.insert(0, ["Question","Option A","Option B","Option C","Option D","Answer"])
+
+    questions = []
+
+    for row in data[1:]:
+
+        if len(row) < 6:
+            continue
+
+        questions.append({
+            "question": row[0],
+            "options": [row[1],row[2],row[3],row[4]],
+            "answer": row[5].strip().upper()
+        })
+
+    waiting_csv = False
+
+    await update.message.reply_text(
+        f"CSV uploaded successfully.\nMCQs loaded: {len(questions)}"
+    )
+
+
+# SET CHANNEL / GROUP
+async def set_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     global target_chat
-
-    if update.effective_user.id != ADMIN_ID:
-        return
 
     target_chat = update.effective_chat.id
 
@@ -38,83 +73,49 @@ async def setchannel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def uploadcsv(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# START TEST
+async def start_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    await update.message.reply_text(
-        "Paste your CSV text now."
-    )
-
-
-async def receive_csv(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    global questions
-
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    text = update.message.text
-
-    if "," not in text:
-        return
-
-    lines = text.strip().split("\n")
-
-    # detect header
-    if not lines[0].lower().startswith("question"):
-        lines.insert(0, "Question,Option A,Option B,Option C,Option D,Answer")
-
-    df = pd.read_csv(StringIO("\n".join(lines)))
-
-    questions = df.to_dict("records")
-
-    questions = questions[:100]
-
-    await update.message.reply_text(
-        f"CSV uploaded successfully.\nMCQs loaded: {len(questions)}"
-    )
-
-    await send_polls(context)
-
-
-async def send_polls(context: ContextTypes.DEFAULT_TYPE):
+    global questions, target_chat
 
     if not questions:
+        await update.message.reply_text("No questions uploaded.")
         return
 
     if not target_chat:
+        await update.message.reply_text("Run /setchannel in your group first.")
         return
+
+    count = 0
 
     for q in questions:
 
-        options = [
-            str(q["Option A"]),
-            str(q["Option B"]),
-            str(q["Option C"]),
-            str(q["Option D"])
-        ]
+        if count >= 100:
+            break
 
-        answer = str(q["Answer"]).strip().upper()
-
-        correct = ["A", "B", "C", "D"].index(answer)
+        correct_index = ["A","B","C","D"].index(q["answer"])
 
         await context.bot.send_poll(
             chat_id=target_chat,
-            question=q["Question"],
-            options=options,
+            question=q["question"],
+            options=q["options"],
             type="quiz",
-            correct_option_id=correct,
+            correct_option_id=correct_index,
             is_anonymous=False
         )
 
+        count += 1
 
+    await update.message.reply_text(f"{count} polls sent.")
+
+
+# MAIN
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("uploadcsv", uploadcsv))
-app.add_handler(CommandHandler("setchannel", setchannel))
+app.add_handler(CommandHandler("uploadcsv", upload_csv))
+app.add_handler(CommandHandler("setchannel", set_channel))
+app.add_handler(CommandHandler("starttest", start_test))
 
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_csv))
 
